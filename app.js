@@ -3,7 +3,7 @@ const DB_NAME = 'symptom-journal-db';
 const DB_VERSION = 1;
 const STORE = 'episodes';
 
-const BODY_PRESETS = ['お腹','頭','喉','首','肩','腰','ひじ','手','股関節','ひざ','足','皮膚','その他'];
+const BODY_PRESETS = ['お腹','頭','顔','目','鼻','口','耳','喉','首','肩','腰','ひじ','手','股関節','ひざ','足','皮膚','その他'];
 const SYMPTOM_PRESETS = ['下痢','腹痛','吐き気','痛み','関節痛','かゆみ','腫れ','発疹','できもの','しびれ','違和感','その他'];
 const SEVERITIES = ['軽い','普通','強い'];
 const SIDES = ['なし','右','左','両方'];
@@ -191,7 +191,7 @@ function renderNew(){
     <section class="card">
       <h2>新しい症状</h2>
       <form id="newForm">
-        <div class="form-group"><label>部位</label>${choiceButtons('body',BODY_PRESETS,'お腹')}<input id="bodyCustom" type="text" placeholder="自由入力（プリセット以外）" style="margin-top:8px"></div>
+        <div class="form-group"><label>部位</label>${choiceButtons('body',BODY_PRESETS,'お腹')}<input id="bodyCustom" type="text" placeholder="自由入力（例：右目、上唇、左耳など）" style="margin-top:8px"></div>
         <div class="form-group"><label>左右</label>${choiceButtons('side',SIDES,'なし')}</div>
         <div class="form-group"><label>症状</label>${choiceButtons('symptom',SYMPTOM_PRESETS,'下痢')}<input id="symptomCustom" type="text" placeholder="自由入力（プリセット以外）" style="margin-top:8px"></div>
         <div class="form-group"><label>程度</label>${choiceButtons('severity',SEVERITIES,'普通')}</div>
