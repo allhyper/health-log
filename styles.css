@@ -50,6 +50,13 @@ textarea{min-height:92px;resize:vertical}
 .timeline-item{position:relative;margin-bottom:18px}
 .timeline-item:before{content:"";position:absolute;left:-22px;top:6px;width:10px;height:10px;border-radius:50%;background:#9ca3af}
 .timeline-item strong{display:block}
+.timeline-item,.notice{overflow-wrap:anywhere}
+.record-actions{display:flex;gap:8px;margin-top:8px}
+.record-actions .btn{min-height:44px;padding:8px 16px}
+.edit-episode{margin:12px 0}
+.form-error{color:#9f1239;font-weight:700}
+.form-error:empty{display:none}
+.btn:disabled{opacity:.55;cursor:default}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .toolbar input,.toolbar select{flex:1;min-width:120px}
 .notice{padding:11px 12px;background:#f5f7fa;border-radius:10px;color:#586270;font-size:13px;margin-bottom:14px}

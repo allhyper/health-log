@@ -1,3 +1,4 @@
+import {editEpisode,editRecord,deleteRecord,isClosingRecord} from './records.js';
 
 const DB_NAME = 'symptom-journal-db';
 const DB_VERSION = 1;
@@ -55,6 +56,17 @@ async function dbPut(ep){
     tx.objectStore(STORE).put(ep);
     tx.oncomplete=()=>resolve();
     tx.onerror=()=>reject(tx.error);
+    tx.onabort=()=>reject(tx.error || new Error('保存が中断されました'));
+  });
+}
+async function dbDelete(id){
+  const db=await openDB();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(STORE,'readwrite');
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error);
+    tx.onabort=()=>reject(tx.error || new Error('削除が中断されました'));
   });
 }
 async function dbClear(){
@@ -345,13 +357,27 @@ function exportCSV(){
   download(`symptom-history-${localDateString()}.csv`,'text/csv;charset=utf-8','\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\n'));
 }
 
-function modal(html){
+function modal(html,onDismiss){
   const node=document.querySelector('#modalTemplate').content.firstElementChild.cloneNode(true);
+  node.returnFocus=document.activeElement;
   node.querySelector('.modal-body').innerHTML=html;
-  node.addEventListener('click',e=>{if(e.target===node)node.remove()});
-  document.body.appendChild(node);return node;
+  const dismiss=()=>{if(node.dataset.busy)return;closeModal(node);onDismiss?.()};
+  node.addEventListener('click',e=>{if(e.target===node)dismiss()});
+  const dialog=node.querySelector('.modal');
+  node.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){e.preventDefault();dismiss();return;}
+    if(e.key!=='Tab') return;
+    const controls=[...dialog.querySelectorAll('button,input,select,textarea,a[href]')].filter(el=>!el.disabled && el.getClientRects().length);
+    const first=controls[0],last=controls[controls.length-1];
+    if(!first){e.preventDefault();dialog.focus();}
+    else if(e.shiftKey && (document.activeElement===first || document.activeElement===dialog)){e.preventDefault();last.focus();}
+    else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+  });
+  dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');dialog.tabIndex=-1;
+  dialog.setAttribute('aria-label',node.querySelector('h2')?.textContent || '症状記録');
+  document.body.appendChild(node);dialog.focus();return node;
 }
-function closeModal(m){m?.remove()}
+function closeModal(m){m?.remove();if(m?.returnFocus?.isConnected)m.returnFocus.focus()}
 function openChangeModal(ep,change){
   const m=modal(`<h2>${change==='improved'?'改善':'悪化'}を記録</h2><p class="small">現在の程度：${esc(todaySeverity(ep))}</p><div class="form-group"><label>今日の程度</label>${choiceButtons('modalSeverity',SEVERITIES,todaySeverity(ep))}</div>${ep.symptom==='下痢'?`<div class="form-group"><label>下痢の補足（任意）</label><div class="grid-2"><input id="mCount" type="number" min="0" placeholder="回数"><select id="mPain"><option value="">腹痛：未入力</option><option value="yes">腹痛あり</option><option value="no">腹痛なし</option></select></div></div>`:''}<div class="modal-actions"><button class="btn cancel">キャンセル</button><button class="btn btn-primary save">記録</button></div>`);
   let severity=todaySeverity(ep);wireChoice(m,'modalSeverity',v=>severity=v);
@@ -387,13 +413,131 @@ function openResponseModal(ep){
     ep.updatedAt=new Date().toISOString();await dbPut(ep);closeModal(m);await reload();
   };
 }
+function selectOptions(values,selected){
+  return values.map(value=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(value)}</option>`).join('');
+}
+function editModal(ep,title,fields){
+  const m=modal(`<h2>${title}</h2><form>${fields}<p class="form-error" role="alert"></p><div class="modal-actions"><button type="button" class="btn cancel">キャンセル</button><button type="submit" class="btn btn-primary save">変更を保存</button></div></form>`,()=>openDetailModal(ep));
+  m.querySelector('.cancel').onclick=()=>{closeModal(m);openDetailModal(ep)};
+  return m;
+}
+async function saveRecordChange(m,ep,makeNext,message){
+  if(m.dataset.busy) return;
+  m.dataset.busy='true';
+  m.querySelectorAll('button').forEach(b=>b.disabled=true);
+  m.querySelector('.form-error').textContent='';
+  try{
+    const next=makeNext();
+    if(next) await dbPut(next); else await dbDelete(ep.id);
+    state.episodes=await dbAll();
+    render();closeModal(m);
+    const saved=state.episodes.find(e=>e.id===ep.id);
+    if(saved) openDetailModal(saved);
+    toast(message);
+  }catch(error){
+    m.querySelector('.form-error').textContent=error instanceof DOMException ? '保存できませんでした。空き容量などを確認して、もう一度お試しください。' : error.message || '保存できませんでした。もう一度お試しください。';
+  }finally{
+    delete m.dataset.busy;m.querySelectorAll('button').forEach(b=>b.disabled=false);
+  }
+}
+function openEpisodeEditModal(ep){
+  const m=editModal(ep,'症状を編集',`
+    <div class="form-group"><label for="editBody">部位</label><input id="editBody" type="text" list="bodyOptions" value="${esc(ep.body)}" required><datalist id="bodyOptions">${selectOptions(BODY_PRESETS,ep.body)}</datalist></div>
+    <div class="form-group"><label for="editSide">左右</label><select id="editSide">${selectOptions(SIDES,ep.side || 'なし')}</select></div>
+    <div class="form-group"><label for="editSymptom">症状</label><input id="editSymptom" type="text" list="symptomOptions" value="${esc(ep.symptom)}" required><datalist id="symptomOptions">${selectOptions(SYMPTOM_PRESETS,ep.symptom)}</datalist></div>
+    <div class="form-group"><label for="editSeverity">開始時の程度</label><select id="editSeverity">${selectOptions(SEVERITIES,ep.initialSeverity)}</select></div>
+    <div class="form-group"><label for="editStart">開始日</label><input id="editStart" type="date" value="${esc(ep.startDate)}" required></div>
+    ${ep.status==='closed'?`<div class="form-group"><label for="editEnd">終了日</label><input id="editEnd" type="date" value="${esc(ep.endDate)}" required></div>`:''}
+    <div class="form-group"><label for="editTrigger">きっかけ・心当たり（任意）</label><textarea id="editTrigger">${esc(ep.trigger || '')}</textarea></div>
+    <p class="hint">開始・治癒の記録がある場合は、その日付も合わせて更新します。日々の変化は1日1件です。</p>`);
+  m.querySelector('form').onsubmit=e=>{
+    e.preventDefault();
+    saveRecordChange(m,ep,()=>editEpisode(ep,{
+      body:m.querySelector('#editBody').value.trim(),side:m.querySelector('#editSide').value,
+      symptom:m.querySelector('#editSymptom').value.trim(),initialSeverity:m.querySelector('#editSeverity').value,
+      startDate:m.querySelector('#editStart').value,endDate:m.querySelector('#editEnd')?.value || ep.endDate,
+      trigger:m.querySelector('#editTrigger').value.trim()
+    }),'症状を更新しました');
+  };
+}
+function openDailyEditModal(ep,index){
+  const record=ep.daily[index];
+  const isStart=record.change==='start';
+  const changes=['same','improved','worsened','recovered'];
+  const hasExtras=ep.symptom==='下痢' || record.diarrheaCount!=null || record.abdominalPain;
+  const m=editModal(ep,'日々の変化を編集',`
+    <div class="form-group"><label for="editDate">日付</label><input id="editDate" type="date" value="${esc(record.date)}" required></div>
+    ${isStart?'<p class="notice">開始の記録です。症状の開始日・開始時の程度も合わせて更新します。</p>':`<div class="form-group"><label for="editChange">変化</label><select id="editChange">${changes.map(c=>`<option value="${c}" ${record.change===c?'selected':''}>${changeLabel(c)}</option>`).join('')}</select><div class="hint">新たに「治った」を選ぶと、この日を終了日にします。終了日の「治った」を別の変化にすると、継続中に戻ります。</div></div>`}
+    <div class="form-group"><label for="editSeverity">程度</label><select id="editSeverity">${selectOptions(SEVERITIES,record.severity)}</select></div>
+    ${hasExtras?`<div class="form-group"><label for="editCount">下痢の回数（任意）</label><input id="editCount" type="number" min="0" step="1" inputmode="numeric" value="${esc(record.diarrheaCount ?? '')}"></div><div class="form-group"><label for="editPain">腹痛（任意）</label><select id="editPain"><option value="">未入力</option><option value="yes">あり</option><option value="no">なし</option></select></div>`:''}`);
+  if(hasExtras) m.querySelector('#editPain').value=record.abdominalPain || '';
+  m.querySelector('form').onsubmit=e=>{
+    e.preventDefault();
+    saveRecordChange(m,ep,()=>{
+      const fields={date:m.querySelector('#editDate').value,change:isStart?'start':m.querySelector('#editChange').value,severity:m.querySelector('#editSeverity').value};
+      if(hasExtras){
+        const count=m.querySelector('#editCount').value;
+        fields.diarrheaCount=count===''?null:Number(count);fields.abdominalPain=m.querySelector('#editPain').value;
+      }
+      return editRecord(ep,'daily',index,fields);
+    },'日々の変化を更新しました');
+  };
+}
+function openResponseEditModal(ep,index){
+  const record=ep.responses[index];
+  const types=[...new Set(['市販薬','処方薬','病院受診','その他',record.type])];
+  const m=editModal(ep,'対応を編集',`
+    <div class="form-group"><label for="editType">種類</label><select id="editType">${selectOptions(types,record.type)}</select></div>
+    <div class="form-group"><label for="editDate">日付</label><input id="editDate" type="date" value="${esc(record.date)}" required></div>
+    <div class="form-group"><label for="editDrug">薬名（任意）</label><input id="editDrug" type="text" value="${esc(record.drugName || '')}"></div>
+    <div class="form-group"><label for="editDepartment">診療科（任意）</label><input id="editDepartment" type="text" value="${esc(record.department || '')}"></div>
+    <div class="form-group"><label for="editHospital">病院名（任意）</label><input id="editHospital" type="text" value="${esc(record.hospital || '')}"></div>
+    <div class="form-group"><label for="editDoctor">医師から言われたこと（任意）</label><textarea id="editDoctor">${esc(record.doctorMemo || '')}</textarea></div>
+    <div class="form-group"><label for="editMemo">メモ（任意）</label><textarea id="editMemo">${esc(record.memo || '')}</textarea></div>`);
+  m.querySelector('form').onsubmit=e=>{
+    e.preventDefault();
+    saveRecordChange(m,ep,()=>editRecord(ep,'responses',index,{
+      type:m.querySelector('#editType').value,date:m.querySelector('#editDate').value,
+      drugName:m.querySelector('#editDrug').value.trim(),department:m.querySelector('#editDepartment').value.trim(),
+      hospital:m.querySelector('#editHospital').value.trim(),doctorMemo:m.querySelector('#editDoctor').value.trim(),memo:m.querySelector('#editMemo').value.trim()
+    }),'対応を更新しました');
+  };
+}
+function openNoteEditModal(ep,index){
+  const record=ep.notes[index];
+  const m=editModal(ep,'途中メモを編集',`
+    <div class="form-group"><label for="editDate">日付</label><input id="editDate" type="date" value="${esc(record.date)}" required></div>
+    <div class="form-group"><label for="editText">メモ</label><textarea id="editText" required>${esc(record.text)}</textarea></div>`);
+  m.querySelector('form').onsubmit=e=>{
+    e.preventDefault();
+    saveRecordChange(m,ep,()=>editRecord(ep,'notes',index,{date:m.querySelector('#editDate').value,text:m.querySelector('#editText').value.trim()}),'途中メモを更新しました');
+  };
+}
+function openRecordDeleteModal(ep,kind,index){
+  const record=kind?ep[kind][index]:null;
+  const title=record?'この記録を削除しますか？':'この症状を削除しますか？';
+  const label=record?`${displayDate(record.date)} ${kind==='daily'?changeLabel(record.change):kind==='responses'?record.type:'途中メモ'}`:`${labelBody(ep)} ${ep.symptom}`;
+  const preview=kind==='notes'?record.text:kind==='responses'?[record.drugName,record.department,record.hospital,record.doctorMemo,record.memo].filter(Boolean).join(' ／ '):'';
+  const detail=record?'選択した1件の記録を削除します。':'この症状と、関連する日々の変化・薬や病院の対応・途中メモをすべて削除します。';
+  const consequence=kind==='daily' && isClosingRecord(ep,record)?'終了日の「治った」を削除するため、この症状は継続中に戻ります。':kind==='daily' && record.change==='start'?'症状本体の開始日・開始時の程度は残ります。':'';
+  const m=modal(`<h2>${title}</h2><p><b>${esc(label)}</b></p>${preview?`<p class="notice">${esc(preview)}</p>`:''}<p>${detail}元に戻せません。</p>${consequence?`<p class="notice">${consequence}</p>`:''}<p class="form-error" role="alert"></p><div class="modal-actions"><button class="btn cancel">キャンセル</button><button class="btn btn-danger delete">削除する</button></div>`,()=>openDetailModal(ep));
+  m.querySelector('.cancel').onclick=()=>{closeModal(m);openDetailModal(ep)};
+  m.querySelector('.delete').onclick=()=>saveRecordChange(m,ep,()=>record?deleteRecord(ep,kind,index):null,record?'記録を削除しました':'症状を削除しました');
+}
 function openDetailModal(ep){
   const events=[];
-  (ep.daily||[]).forEach(d=>events.push({date:d.date,sort:1,html:`<strong>${changeLabel(d.change)} ・ ${esc(d.severity)}</strong>${d.diarrheaCount!=null?`下痢 ${d.diarrheaCount}回`:''}${d.abdominalPain?`${d.diarrheaCount!=null?' ／ ':''}腹痛${d.abdominalPain==='yes'?'あり':'なし'}`:''}`}));
-  (ep.responses||[]).forEach(r=>events.push({date:r.date,sort:2,html:`<strong>${esc(r.type)}</strong>${r.drugName?`薬名：${esc(r.drugName)}<br>`:''}${r.department?`診療科：${esc(r.department)}<br>`:''}${r.hospital?`病院：${esc(r.hospital)}<br>`:''}${r.doctorMemo?`医師メモ：${esc(r.doctorMemo)}<br>`:''}${r.memo?esc(r.memo):''}`}));
-  (ep.notes||[]).forEach(n=>events.push({date:n.date,sort:3,html:`<strong>途中メモ</strong>${esc(n.text)}`}));
+  (ep.daily||[]).forEach((d,index)=>events.push({kind:'daily',index,date:d.date,sort:1,html:`<strong>${esc(changeLabel(d.change))} ・ ${esc(d.severity)}</strong>${d.diarrheaCount!=null?`下痢 ${esc(d.diarrheaCount)}回`:''}${d.abdominalPain?`${d.diarrheaCount!=null?' ／ ':''}腹痛${d.abdominalPain==='yes'?'あり':'なし'}`:''}`}));
+  (ep.responses||[]).forEach((r,index)=>events.push({kind:'responses',index,date:r.date,sort:2,html:`<strong>${esc(r.type)}</strong>${r.drugName?`薬名：${esc(r.drugName)}<br>`:''}${r.department?`診療科：${esc(r.department)}<br>`:''}${r.hospital?`病院：${esc(r.hospital)}<br>`:''}${r.doctorMemo?`医師メモ：${esc(r.doctorMemo)}<br>`:''}${r.memo?esc(r.memo):''}`}));
+  (ep.notes||[]).forEach((n,index)=>events.push({kind:'notes',index,date:n.date,sort:3,html:`<strong>途中メモ</strong>${esc(n.text)}`}));
   events.sort((a,b)=>a.date.localeCompare(b.date)||a.sort-b.sort);
-  const m=modal(`<h2>${esc(labelBody(ep))} ${esc(ep.symptom)}</h2><div class="meta">${displayDate(ep.startDate)}〜${ep.endDate?displayDate(ep.endDate):'継続中'} ・ ${daysInclusive(ep.startDate,ep.endDate||localDateString())}日間</div>${ep.trigger?`<div class="notice"><b>きっかけ・心当たり</b><br>${esc(ep.trigger).replace(/\n/g,'<br>')}</div>`:''}<div class="timeline">${events.map(e=>`<div class="timeline-item"><span class="small">${displayDate(e.date)}</span>${e.html}</div>`).join('')}</div><div class="modal-actions">${ep.status==='closed'?'<button class="btn reopen">再開する</button>':''}<button class="btn btn-primary close">閉じる</button></div>`);
+  const m=modal(`<h2>${esc(labelBody(ep))} ${esc(ep.symptom)}</h2><div class="meta">${displayDate(ep.startDate)}〜${ep.endDate?displayDate(ep.endDate):'継続中'} ・ ${daysInclusive(ep.startDate,ep.endDate||localDateString())}日間</div><button class="btn btn-full edit-episode">症状を編集</button>${ep.trigger?`<div class="notice"><b>きっかけ・心当たり</b><br>${esc(ep.trigger).replace(/\n/g,'<br>')}</div>`:''}<div class="timeline">${events.map(e=>`<div class="timeline-item" data-kind="${e.kind}" data-index="${e.index}"><span class="small">${displayDate(e.date)}</span>${e.html}<div class="record-actions"><button class="btn edit-record" aria-label="${esc(displayDate(e.date))}の${e.kind==='daily'?'日々の変化':e.kind==='responses'?'対応':'途中メモ'}を編集">編集</button><button class="btn btn-danger delete-record" aria-label="${esc(displayDate(e.date))}の${e.kind==='daily'?'日々の変化':e.kind==='responses'?'対応':'途中メモ'}を削除">削除</button></div></div>`).join('') || '<p class="small">途中記録はありません。</p>'}</div><button class="btn btn-danger btn-full delete-episode">この症状をすべて削除</button><div class="modal-actions">${ep.status==='closed'?'<button class="btn reopen">再開する</button>':''}<button class="btn btn-primary close">閉じる</button></div>`);
+  m.querySelector('.edit-episode').onclick=()=>{closeModal(m);openEpisodeEditModal(ep)};
+  m.querySelector('.delete-episode').onclick=()=>{closeModal(m);openRecordDeleteModal(ep)};
+  m.querySelectorAll('.timeline-item').forEach(item=>{
+    const {kind,index}=item.dataset;
+    item.querySelector('.edit-record').onclick=()=>{closeModal(m);({daily:openDailyEditModal,responses:openResponseEditModal,notes:openNoteEditModal})[kind](ep,Number(index))};
+    item.querySelector('.delete-record').onclick=()=>{closeModal(m);openRecordDeleteModal(ep,kind,Number(index))};
+  });
   m.querySelector('.close').onclick=()=>closeModal(m);
   const rb=m.querySelector('.reopen');if(rb)rb.onclick=async()=>{await reopenEpisode(ep);closeModal(m);await reload()};
 }
