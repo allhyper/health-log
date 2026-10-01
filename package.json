@@ -1,0 +1,13 @@
+{
+  "name": "health-log",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/records.test.js",
+    "test:browser": "playwright test",
+    "start": "node tests/server.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}
